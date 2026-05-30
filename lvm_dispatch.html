@@ -862,8 +862,9 @@ async function signIn(){
   const verifier  = generateRandom(64);
   const challenge = await generateCodeChallenge(verifier);
   const state     = generateRandom(16);
-  sessionStorage.setItem('pkce_verifier', verifier);
-  sessionStorage.setItem('pkce_state', state);
+  // Use localStorage — survives the Microsoft redirect
+  localStorage.setItem('pkce_verifier', verifier);
+  localStorage.setItem('pkce_state', state);
   const params = new URLSearchParams({
     client_id     : AUTH_CONFIG.clientId,
     response_type : 'code',
@@ -885,12 +886,12 @@ async function handleAuthCallback(){
   const error    = params.get('error');
   if(error){ console.error('Auth error:', error, params.get('error_description')); return false; }
   if(!code) return false;
-  const savedState = sessionStorage.getItem('pkce_state');
+  const savedState = localStorage.getItem('pkce_state');
   // Be lenient with state mismatch — still try to exchange the code
   if(state !== savedState){
     console.warn('State mismatch — proceeding anyway:', state, 'vs', savedState);
   }
-  const verifier = sessionStorage.getItem('pkce_verifier');
+  const verifier = localStorage.getItem('pkce_verifier');
   if(!verifier){ console.error('No PKCE verifier found'); return false; }
   const body = new URLSearchParams({
     client_id    : AUTH_CONFIG.clientId,
@@ -914,8 +915,8 @@ async function handleAuthCallback(){
       if(data.refresh_token) sessionStorage.setItem('refresh_token', data.refresh_token);
       await loadUserInfo();
       window.history.replaceState({}, document.title, AUTH_CONFIG.redirectUri);
-      sessionStorage.removeItem('pkce_verifier');
-      sessionStorage.removeItem('pkce_state');
+      localStorage.removeItem('pkce_verifier');
+      localStorage.removeItem('pkce_state');
       return true;
     } else {
       console.error('Token exchange failed:', data);
@@ -934,18 +935,10 @@ async function loadUserInfo(){
 }
 
 function checkExistingToken(){
-  const token = sessionStorage.getItem('graph_token') || localStorage.getItem('graph_token_backup');
-  const user  = sessionStorage.getItem('current_user') || localStorage.getItem('current_user_backup');
-  if(token){ 
-    graphToken = token; 
-    sessionStorage.setItem('graph_token', token);
-  }
-  if(user){ 
-    try { 
-      currentUser = JSON.parse(user); 
-      sessionStorage.setItem('current_user', user);
-    } catch(e){} 
-  }
+  const token = localStorage.getItem('graph_token_backup');
+  const user  = localStorage.getItem('current_user_backup');
+  if(token){ graphToken = token; }
+  if(user){ try{ currentUser = JSON.parse(user); }catch(e){} }
   return !!(token && user);
 }
 
