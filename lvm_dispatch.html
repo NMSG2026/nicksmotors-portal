@@ -825,31 +825,15 @@ const DEFAULT_PROVIDERS = [
 ];
 
 // ══════════════════════════════════════════════════════
-// MICROSOFT GRAPH AUTHENTICATION CONFIG
+// MICROSOFT GRAPH AUTHENTICATION - Native OAuth2 PKCE
+// No external library needed
 // ══════════════════════════════════════════════════════
-const MSAL_CONFIG = {
-  auth: {
-    clientId    : '74d5f18d-f576-4f12-9721-121173115627',
-    authority   : 'https://login.microsoftonline.com/1c83b146-abff-4531-9ba5-5f702ab46c8b',
-    redirectUri : 'https://blue-ground-0f19ded10.7.azurestaticapps.net/lvm_dispatch.html'
-  },
-  cache: {
-    cacheLocation      : 'sessionStorage',
-    storeAuthStateInCookie: false
-  },
-  system: {
-    loggerOptions: {
-      loggerCallback: () => {},
-      piiLoggingEnabled: false
-    }
-  }
+const AUTH_CONFIG = {
+  clientId    : '74d5f18d-f576-4f12-9721-121173115627',
+  tenantId    : '1c83b146-abff-4531-9ba5-5f702ab46c8b',
+  redirectUri : 'https://blue-ground-0f19ded10.7.azurestaticapps.net/lvm_dispatch.html',
+  scopes      : ['User.Read', 'Sites.ReadWrite.All', 'https://springgreen.sharepoint.com/AllSites.Write']
 };
-
-const GRAPH_SCOPES = [
-  'User.Read',
-  'Sites.ReadWrite.All',
-  'https://springgreen.sharepoint.com/AllSites.Write'
-];
 
 const SP_SITE_URL = 'https://springgreen.sharepoint.com/sites/Dispatch';
 const SP_LISTS = {
@@ -859,100 +843,126 @@ const SP_LISTS = {
 };
 const SP_CONFIGURED = true;
 
-// MSAL instance
-let msalInstance = null;
-let currentUser  = null;
-let graphToken   = null;
+let currentUser = null;
+let graphToken  = null;
 
-async function initMSAL(){
-  console.log('MSAL: starting init...');
-  // Load MSAL from CDN if not already loaded
-  if(!window.msal){
-    console.log('MSAL: loading CDN...');
-    await new Promise((resolve, reject) => {
-      const s = document.createElement('script');
-      s.src = 'https://unpkg.com/@azure/msal-browser@3.13.0/dist/index.umd.min.js';
-      s.onload = () => { console.log('MSAL: CDN loaded'); resolve(); };
-      s.onerror = (e) => { console.error('MSAL: CDN failed', e); reject(e); };
-      document.head.appendChild(s);
-    });
-  }
-  if(!msalInstance){
-    console.log('MSAL: creating instance...');
-    msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
-    console.log('MSAL: initializing...');
-    await msalInstance.initialize();
-    console.log('MSAL: initialized OK');
-  }
-
-  // Handle redirect response (after login redirect comes back)
-  try {
-    const response = await msalInstance.handleRedirectPromise();
-    if(response){
-      graphToken = response.accessToken;
-      currentUser = response.account;
-    }
-  } catch(e){ console.warn('Redirect handle error:', e); }
-
-  // Check if already signed in
-  const accounts = msalInstance.getAllAccounts();
-  if(accounts.length > 0){
-    currentUser = accounts[0];
-    if(!graphToken) graphToken = await getGraphToken();
-    return true;
-  }
-  return false;
+// ── PKCE HELPERS ──
+function generateRandom(len){
+  const arr = new Uint8Array(len);
+  crypto.getRandomValues(arr);
+  return btoa(String.fromCharCode(...arr)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 }
-
-async function getGraphToken(){
-  if(!msalInstance) return null;
-  try {
-    const accounts = msalInstance.getAllAccounts();
-    if(!accounts.length) return null;
-    const result = await msalInstance.acquireTokenSilent({
-      scopes   : GRAPH_SCOPES,
-      account  : accounts[0]
-    });
-    graphToken = result.accessToken;
-    return graphToken;
-  } catch(e){
-    // Silent failed — try redirect
-    await msalInstance.acquireTokenRedirect({ scopes: GRAPH_SCOPES });
-    return null;
-  }
+async function generateCodeChallenge(verifier){
+  const data = new TextEncoder().encode(verifier);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return btoa(String.fromCharCode(...new Uint8Array(hash))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
 }
 
 async function signIn(){
-  if(!msalInstance) await initMSAL();
-  await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
+  const verifier  = generateRandom(64);
+  const challenge = await generateCodeChallenge(verifier);
+  const state     = generateRandom(16);
+  sessionStorage.setItem('pkce_verifier', verifier);
+  sessionStorage.setItem('pkce_state', state);
+  const params = new URLSearchParams({
+    client_id     : AUTH_CONFIG.clientId,
+    response_type : 'code',
+    redirect_uri  : AUTH_CONFIG.redirectUri,
+    response_mode : 'query',
+    scope         : AUTH_CONFIG.scopes.join(' ') + ' offline_access openid profile',
+    state,
+    code_challenge        : challenge,
+    code_challenge_method : 'S256',
+    prompt        : 'select_account'
+  });
+  window.location.href = `https://login.microsoftonline.com/${AUTH_CONFIG.tenantId}/oauth2/v2.0/authorize?${params}`;
 }
 
-async function signOut(){
-  if(!msalInstance) return;
-  await msalInstance.logoutRedirect();
+async function handleAuthCallback(){
+  const params   = new URLSearchParams(window.location.search);
+  const code     = params.get('code');
+  const state    = params.get('state');
+  const error    = params.get('error');
+  if(error){ console.error('Auth error:', error, params.get('error_description')); return false; }
+  if(!code) return false;
+  const savedState = sessionStorage.getItem('pkce_state');
+  if(state !== savedState){ console.error('State mismatch'); return false; }
+  const verifier = sessionStorage.getItem('pkce_verifier');
+  // Exchange code for token
+  const body = new URLSearchParams({
+    client_id    : AUTH_CONFIG.clientId,
+    code,
+    redirect_uri : AUTH_CONFIG.redirectUri,
+    grant_type   : 'authorization_code',
+    code_verifier: verifier,
+    scope        : AUTH_CONFIG.scopes.join(' ') + ' offline_access openid profile'
+  });
+  try {
+    const r = await fetch(`https://login.microsoftonline.com/${AUTH_CONFIG.tenantId}/oauth2/v2.0/token`, {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
+    });
+    const data = await r.json();
+    if(data.access_token){
+      graphToken = data.access_token;
+      sessionStorage.setItem('graph_token', graphToken);
+      if(data.refresh_token) sessionStorage.setItem('refresh_token', data.refresh_token);
+      // Get user info
+      await loadUserInfo();
+      // Clean URL
+      window.history.replaceState({}, document.title, AUTH_CONFIG.redirectUri);
+      sessionStorage.removeItem('pkce_verifier');
+      sessionStorage.removeItem('pkce_state');
+      return true;
+    }
+  } catch(e){ console.error('Token exchange failed:', e); }
+  return false;
+}
+
+async function loadUserInfo(){
+  const data = await graphGet('https://graph.microsoft.com/v1.0/me');
+  if(data){
+    currentUser = { name: data.displayName, username: data.userPrincipalName };
+    sessionStorage.setItem('current_user', JSON.stringify(currentUser));
+  }
+}
+
+function checkExistingToken(){
+  const token = sessionStorage.getItem('graph_token');
+  const user  = sessionStorage.getItem('current_user');
+  if(token){ graphToken = token; }
+  if(user) { try { currentUser = JSON.parse(user); } catch(e){} }
+  return !!(token && user);
+}
+
+function signOut(){
+  sessionStorage.clear();
+  graphToken  = null;
+  currentUser = null;
+  window.location.href = `https://login.microsoftonline.com/${AUTH_CONFIG.tenantId}/oauth2/v2.0/logout?post_logout_redirect_uri=${encodeURIComponent(AUTH_CONFIG.redirectUri)}`;
 }
 
 // ── GRAPH API HELPERS ──
 async function graphGet(url){
-  const token = graphToken || await getGraphToken();
-  if(!token) return null;
+  if(!graphToken) return null;
   try {
     const r = await fetch(url, {
-      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
+      headers: { 'Authorization': `Bearer ${graphToken}`, 'Accept': 'application/json' }
     });
+    if(r.status === 401){ graphToken = null; sessionStorage.removeItem('graph_token'); return null; }
     if(!r.ok) throw new Error(r.statusText);
     return await r.json();
   } catch(e){ console.warn('Graph GET failed:', e); return null; }
 }
 
 async function graphPost(url, body, method='POST'){
-  const token = graphToken || await getGraphToken();
-  if(!token) return null;
+  if(!graphToken) return null;
   try {
     const r = await fetch(url, {
       method,
       headers: {
-        'Authorization' : `Bearer ${token}`,
+        'Authorization' : `Bearer ${graphToken}`,
         'Content-Type'  : 'application/json',
         'Accept'        : 'application/json',
         ...(method === 'PATCH' ? {'If-Match': '*'} : {})
@@ -960,7 +970,7 @@ async function graphPost(url, body, method='POST'){
       body: JSON.stringify(body)
     });
     if(!r.ok) throw new Error(await r.text());
-    return method === 'DELETE' ? true : await r.json();
+    return method === 'DELETE' ? true : (r.status === 204 ? true : await r.json());
   } catch(e){ console.warn(`Graph ${method} failed:`, e); return null; }
 }
 
@@ -968,14 +978,11 @@ async function graphPost(url, body, method='POST'){
 let _siteId = null;
 async function getSiteId(){
   if(_siteId) return _siteId;
-  const hostname = 'springgreen.sharepoint.com';
-  const sitePath = '/sites/Dispatch';
-  const data = await graphGet(`https://graph.microsoft.com/v1.0/sites/${hostname}:${sitePath}`);
+  const data = await graphGet('https://graph.microsoft.com/v1.0/sites/springgreen.sharepoint.com:/sites/Dispatch');
   if(data) _siteId = data.id;
   return _siteId;
 }
 
-// Get list ID by name and cache it
 const _listIds = {};
 async function getListId(listName){
   if(_listIds[listName]) return _listIds[listName];
@@ -996,7 +1003,6 @@ async function spGet(listName, filter='', orderby=''){
   if(!siteId || !listId) return null;
   let url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields&$top=999`;
   if(filter)  url += `&$filter=${encodeURIComponent(filter)}`;
-  if(orderby) url += `&$orderby=${encodeURIComponent(orderby)}`;
   const data = await graphGet(url);
   return data ? data.value.map(i => ({...i.fields, _graphId: i.id})) : null;
 }
@@ -1005,17 +1011,14 @@ async function spCreate(listName, fields){
   const siteId = await getSiteId();
   const listId = await getListId(listName);
   if(!siteId || !listId) return null;
-  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`;
-  const result = await graphPost(url, { fields });
-  return result;
+  return await graphPost(`https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`, { fields });
 }
 
 async function spUpdate(listName, graphId, fields){
   const siteId = await getSiteId();
   const listId = await getListId(listName);
   if(!siteId || !listId) return null;
-  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${graphId}/fields`;
-  return await graphPost(url, fields, 'PATCH');
+  return await graphPost(`https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${graphId}/fields`, fields, 'PATCH');
 }
 
 // ── SP STATUS INDICATOR ──
@@ -1023,11 +1026,11 @@ function showSPStatus(state){
   let el = document.getElementById('sp-status');
   if(!el) return;
   const map = {
-    loading : ['⏳', 'Syncing…',        '#7A9AB5'],
-    ok      : ['🟢', 'Connected',        '#1A7A3C'],
-    error   : ['🔴', 'Offline — local',  '#C0392B'],
-    offline : ['⚪', 'Local mode',       '#7A9AB5'],
-    signing : ['🔐', 'Signing in…',      '#005B9A']
+    loading : ['⏳', 'Syncing…',       '#7A9AB5'],
+    ok      : ['🟢', 'Connected',       '#1A7A3C'],
+    error   : ['🔴', 'Offline — local', '#C0392B'],
+    offline : ['⚪', 'Local mode',      '#7A9AB5'],
+    signing : ['🔐', 'Signing in…',     '#005B9A']
   };
   const [icon, text, color] = map[state] || map.offline;
   el.innerHTML = `<span style="font-size:11px;color:${color};font-weight:600">${icon} ${text}</span>`;
@@ -1404,23 +1407,13 @@ function doChangePw(){
 let DISPATCH_USER = localStorage.getItem('nm_user') || 'Admin';
 let DISPATCH_PASS = localStorage.getItem('nm_pass') || 'e%oxrbc3r5mKq&ba';
 function showLogin(){
-  // Use Microsoft authentication instead of password prompt
-  showSPStatus('signing');
-  initMSAL().then(signedIn => {
-    if(signedIn){
-      enter('dispatcher');
-    } else {
-      signIn(); // redirects to Microsoft login
-    }
-  }).catch(e => {
-    console.error('MSAL full error:', e, e.message, e.stack);
-    // Fallback to password login if MSAL fails
-    document.getElementById('login-user').value='';
-    document.getElementById('login-pass').value='';
-    document.getElementById('login-error').style.display='none';
-    document.getElementById('modal-login').classList.add('open');
-    setTimeout(()=>document.getElementById('login-user').focus(),100);
-  });
+  // Check if already authenticated
+  if(checkExistingToken()){
+    enter('dispatcher');
+    return;
+  }
+  // Use Microsoft OAuth2 PKCE flow
+  signIn();
 }
 function doLogin(){
   const u=document.getElementById('login-user').value.trim();
@@ -1474,7 +1467,6 @@ function enter(role){
   document.getElementById('screen-'+role).classList.add('active');
   if(role==='dispatcher'){
     renderDispatcher();dTab('queue');
-    // If already authenticated via MSAL, load from SharePoint
     if(currentUser && graphToken){
       const userEl = document.getElementById('sp-status');
       if(userEl){
@@ -2628,11 +2620,14 @@ body{font-family:Arial,sans-serif;font-size:11px;color:#000;background:#fff}
 // ── INIT ──
 renderPortalTrips();
 
-// Handle MSAL redirect silently on page load (non-blocking)
-if(window.location.hash && window.location.hash.includes('code=')) {
-  initMSAL().then(signedIn => {
-    if(signedIn) enter('dispatcher');
-  }).catch(e => console.warn('MSAL redirect handling:', e));
+// Handle Microsoft OAuth2 callback
+if(window.location.search.includes('code=')) {
+  handleAuthCallback().then(success => {
+    if(success) enter('dispatcher');
+  }).catch(e => console.error('Auth callback failed:', e));
+} else {
+  // Check for existing session
+  checkExistingToken();
 }
 </script>
 </body>
