@@ -871,7 +871,7 @@ async function initMSAL(){
     console.log('MSAL: loading CDN...');
     await new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = 'https://alcdn.msauth.net/browser/3.13.0/js/msal-browser.min.js';
+      s.src = 'https://unpkg.com/@azure/msal-browser@3.13.0/dist/index.umd.min.js';
       s.onload = () => { console.log('MSAL: CDN loaded'); resolve(); };
       s.onerror = (e) => { console.error('MSAL: CDN failed', e); reject(e); };
       document.head.appendChild(s);

@@ -1,0 +1,8 @@
+{
+  "globalHeaders": {
+    "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://alcdn.msauth.net https://cdn.jsdelivr.net https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://login.microsoftonline.com https://graph.microsoft.com https://springgreen.sharepoint.com https://*.sharepoint.com; frame-src https://login.microsoftonline.com; img-src 'self' data: blob:"
+  },
+  "navigationFallback": {
+    "rewrite": "/index.html"
+  }
+}
