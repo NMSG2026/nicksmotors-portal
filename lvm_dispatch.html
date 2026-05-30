@@ -856,7 +856,7 @@ let currentUser  = null;
 let graphToken   = null;
 
 async function initMSAL(){
-  // Load MSAL from CDN
+  // Load MSAL from CDN if not already loaded
   if(!window.msal){
     await new Promise((resolve, reject) => {
       const s = document.createElement('script');
@@ -866,12 +866,19 @@ async function initMSAL(){
       document.head.appendChild(s);
     });
   }
-  msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
-  await msalInstance.initialize();
+  if(!msalInstance){
+    msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+    await msalInstance.initialize();
+  }
 
-  // Handle redirect response
-  const response = await msalInstance.handleRedirectPromise();
-  if(response) graphToken = response.accessToken;
+  // Handle redirect response (after login redirect comes back)
+  try {
+    const response = await msalInstance.handleRedirectPromise();
+    if(response){
+      graphToken = response.accessToken;
+      currentUser = response.account;
+    }
+  } catch(e){ console.warn('Redirect handle error:', e); }
 
   // Check if already signed in
   const accounts = msalInstance.getAllAccounts();
@@ -1451,7 +1458,6 @@ function enter(role){
     showSPStatus('signing');
     initMSAL().then(signedIn => {
       if(signedIn){
-        // Show user name in topbar
         const userEl = document.getElementById('sp-status');
         if(userEl && currentUser){
           const name = currentUser.name || currentUser.username;
@@ -1465,6 +1471,8 @@ function enter(role){
     }).catch(e => {
       console.warn('MSAL init failed:', e);
       showSPStatus('error');
+      // Still allow dispatcher to work with local data
+      renderDispatcher();
     });
   }
   if(role==='requester'){buildDestDatalist();buildVehiclePref();buildSchedVehiclePref();rTab('new');}
@@ -2608,6 +2616,11 @@ body{font-family:Arial,sans-serif;font-size:11px;color:#000;background:#fff}
 
 // ── INIT ──
 renderPortalTrips();
+
+// Handle MSAL redirect silently on page load (non-blocking)
+if(window.location.hash && window.location.hash.includes('code=')) {
+  initMSAL().catch(e => console.warn('MSAL redirect handling:', e));
+}
 </script>
 </body>
 </html>
