@@ -1390,11 +1390,23 @@ function doChangePw(){
 let DISPATCH_USER = localStorage.getItem('nm_user') || 'Admin';
 let DISPATCH_PASS = localStorage.getItem('nm_pass') || 'e%oxrbc3r5mKq&ba';
 function showLogin(){
-  document.getElementById('login-user').value='';
-  document.getElementById('login-pass').value='';
-  document.getElementById('login-error').style.display='none';
-  document.getElementById('modal-login').classList.add('open');
-  setTimeout(()=>document.getElementById('login-user').focus(),100);
+  // Use Microsoft authentication instead of password prompt
+  showSPStatus('signing');
+  initMSAL().then(signedIn => {
+    if(signedIn){
+      enter('dispatcher');
+    } else {
+      signIn(); // redirects to Microsoft login
+    }
+  }).catch(e => {
+    console.warn('MSAL failed, falling back to password:', e);
+    // Fallback to password login if MSAL fails
+    document.getElementById('login-user').value='';
+    document.getElementById('login-pass').value='';
+    document.getElementById('login-error').style.display='none';
+    document.getElementById('modal-login').classList.add('open');
+    setTimeout(()=>document.getElementById('login-user').focus(),100);
+  });
 }
 function doLogin(){
   const u=document.getElementById('login-user').value.trim();
@@ -1448,25 +1460,17 @@ function enter(role){
   document.getElementById('screen-'+role).classList.add('active');
   if(role==='dispatcher'){
     renderDispatcher();dTab('queue');
-    showSPStatus('signing');
-    initMSAL().then(signedIn => {
-      if(signedIn){
-        const userEl = document.getElementById('sp-status');
-        if(userEl && currentUser){
-          const name = currentUser.name || currentUser.username;
-          userEl.innerHTML = `<span style="font-size:11px;color:var(--green);font-weight:600">🟢 ${name}</span>`;
-        }
-        loadFromSharePoint();
-      } else {
-        showSPStatus('signing');
-        signIn();
+    // If already authenticated via MSAL, load from SharePoint
+    if(currentUser && graphToken){
+      const userEl = document.getElementById('sp-status');
+      if(userEl){
+        const name = currentUser.name || currentUser.username;
+        userEl.innerHTML = `<span style="font-size:11px;color:var(--green);font-weight:600">🟢 ${name}</span>`;
       }
-    }).catch(e => {
-      console.warn('MSAL init failed:', e);
-      showSPStatus('error');
-      // Still allow dispatcher to work with local data
-      renderDispatcher();
-    });
+      loadFromSharePoint();
+    } else {
+      showSPStatus('offline');
+    }
   }
   if(role==='requester'){buildDestDatalist();buildVehiclePref();buildSchedVehiclePref();rTab('new');}
 }
@@ -2612,7 +2616,9 @@ renderPortalTrips();
 
 // Handle MSAL redirect silently on page load (non-blocking)
 if(window.location.hash && window.location.hash.includes('code=')) {
-  initMSAL().catch(e => console.warn('MSAL redirect handling:', e));
+  initMSAL().then(signedIn => {
+    if(signedIn) enter('dispatcher');
+  }).catch(e => console.warn('MSAL redirect handling:', e));
 }
 </script>
 </body>
