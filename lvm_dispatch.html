@@ -945,11 +945,13 @@ function signOut(){
 
 // ── GRAPH API HELPERS ──
 async function graphGet(url){
-  if(!graphToken) return null;
+  if(!graphToken){ console.warn('graphGet: no token'); return null; }
   try {
+    console.log('graphGet:', url.slice(0,80));
     const r = await fetch(url, {
       headers: { 'Authorization': `Bearer ${graphToken}`, 'Accept': 'application/json' }
     });
+    console.log('graphGet response:', r.status);
     if(r.status === 401){ graphToken = null; sessionStorage.removeItem('graph_token'); return null; }
     if(!r.ok) throw new Error(r.statusText);
     return await r.json();
@@ -1040,8 +1042,10 @@ function showSPStatus(state){
 async function loadFromSharePoint(){
   if(!SP_CONFIGURED) return;
   showSPStatus('loading');
+  console.log('loadFromSharePoint: starting, graphToken exists:', !!graphToken);
   try {
     const reqs = await spGet(SP_LISTS.requests, '', 'Created desc');
+    console.log('loadFromSharePoint: reqs result:', reqs ? reqs.length + ' items' : 'null');
     if(reqs){
       db.requests = reqs.map(r => ({
         id         : r.ReqID        || r._graphId,
@@ -1108,6 +1112,7 @@ async function loadFromSharePoint(){
     selectedIds.clear();
     renderPortalTrips && renderPortalTrips();
     renderDispatcher && renderDispatcher();
+    renderQueue && renderQueue();
   } catch(e){
     console.warn('SP load error:', e);
     showSPStatus('error');
@@ -1298,6 +1303,7 @@ function resetCash(btnId,inputId){
 
 // ── NAVIGATION ──
 function goHome(){
+  stopAutoRefresh();
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById('screen-portal').classList.add('active');
   renderPortalTrips();
@@ -1314,9 +1320,12 @@ function enter(role){
         userEl.innerHTML = `<span style="font-size:11px;color:var(--green);font-weight:600">🟢 ${name}</span>`;
       }
       loadFromSharePoint();
+      startAutoRefresh();
     } else {
       showSPStatus('offline');
     }
+  } else {
+    stopAutoRefresh();
   }
   if(role==='requester'){buildDestDatalist();buildVehiclePref();buildSchedVehiclePref();rTab('new');}
 }
@@ -2459,6 +2468,26 @@ body{font-family:Arial,sans-serif;font-size:11px;color:#000;background:#fff}
   <div class="gp-footer">Nick's Motors (Pvt) Ltd · Gate pass must be presented to guard on duty · ${p.gp}</div>
 </div></body></html>`);
   win.document.close();
+}
+
+// ── AUTO REFRESH ──
+let _autoRefreshInterval = null;
+function startAutoRefresh(){
+  if(_autoRefreshInterval) return;
+  _autoRefreshInterval = setInterval(async () => {
+    // Only refresh if dispatcher screen is active and connected
+    const dispScreen = document.getElementById('screen-dispatcher');
+    if(dispScreen && dispScreen.classList.contains('active') && graphToken){
+      await loadFromSharePoint();
+      // Update badge count
+      const pb = db.requests.filter(r=>r.status==='pending').length;
+      const qb = document.getElementById('queue-badge');
+      if(qb) qb.textContent = pb ? `(${pb})` : '';
+    }
+  }, 30000); // every 30 seconds
+}
+function stopAutoRefresh(){
+  if(_autoRefreshInterval){ clearInterval(_autoRefreshInterval); _autoRefreshInterval = null; }
 }
 
 // ── INIT ──
