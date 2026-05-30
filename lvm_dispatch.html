@@ -499,8 +499,10 @@ textarea{resize:vertical;min-height:68px}
     <div class="tabs">
       <button class="tab active" id="dtab-queue" onclick="dTab('queue')">Queue <span id="queue-badge"></span></button>
       <button class="tab" id="dtab-active" onclick="dTab('active')">Active</button>
+      <button class="tab" id="dtab-week" onclick="dTab('week')">This Week</button>
       <button class="tab" id="dtab-timetable" onclick="dTab('timetable')">Timetable</button>
-      <button class="tab" id="dtab-all" onclick="dTab('all')">All Passes</button>
+      <button class="tab" id="dtab-reports" onclick="dTab('reports')">Reports</button>
+      <button class="tab" id="dtab-dashboard" onclick="dTab('dashboard')">Dashboard</button>
       <button class="tab" id="dtab-settings" onclick="dTab('settings')">Settings</button>
     </div>
     <div id="d-queue">
@@ -514,8 +516,10 @@ textarea{resize:vertical;min-height:68px}
       <div id="queue-list"></div>
     </div>
     <div id="d-active" style="display:none"></div>
+    <div id="d-week" style="display:none"></div>
     <div id="d-timetable" style="display:none"></div>
-    <div id="d-all" style="display:none"></div>
+    <div id="d-reports" style="display:none"></div>
+    <div id="d-dashboard" style="display:none"></div>
     <div id="d-settings" style="display:none"></div>
   </div>
 </div>
@@ -953,11 +957,9 @@ function signOut(){
 async function graphGet(url){
   if(!graphToken){ console.warn('graphGet: no token'); return null; }
   try {
-    console.log('graphGet:', url.slice(0,80));
     const r = await fetch(url, {
       headers: { 'Authorization': `Bearer ${graphToken}`, 'Accept': 'application/json' }
     });
-    console.log('graphGet response:', r.status);
     if(r.status === 401){ graphToken = null; sessionStorage.removeItem('graph_token'); return null; }
     if(!r.ok) throw new Error(r.statusText);
     return await r.json();
@@ -1048,10 +1050,8 @@ function showSPStatus(state){
 async function loadFromSharePoint(){
   if(!SP_CONFIGURED) return;
   showSPStatus('loading');
-  console.log('loadFromSharePoint: starting, graphToken exists:', !!graphToken);
   try {
     const reqs = await spGet(SP_LISTS.requests, '', 'Created desc');
-    console.log('loadFromSharePoint: reqs result:', reqs ? reqs.length + ' items' : 'null');
     if(reqs && reqs.length > 0){
       db.requests = reqs.map(r => ({
         id         : r.ReqID        || r._graphId,
@@ -1670,14 +1670,16 @@ function renderDispatcher(){
   document.getElementById('queue-badge').textContent=pb?`(${pb})`:'';
 }
 function dTab(t){
-  ['queue','active','timetable','all','settings'].forEach(id=>{
+  ['queue','active','week','timetable','reports','dashboard','settings'].forEach(id=>{
     document.getElementById('dtab-'+id).classList.toggle('active',id===t);
     document.getElementById('d-'+id).style.display=id===t?'block':'none';
   });
   if(t==='queue')renderQueue();
   if(t==='active')renderActive();
+  if(t==='week')renderThisWeek();
   if(t==='timetable')renderTimetable();
-  if(t==='all')renderAll();
+  if(t==='reports')renderReports();
+  if(t==='dashboard')renderDashboard();
   if(t==='settings')renderSettings();
 }
 function vehicleOptions(pref){
@@ -1921,11 +1923,9 @@ function dispatcherCancel(reqId){
 
 
 function approveReq(id){
-  console.log('approveReq called with id:', id);
-  console.log('db.requests length:', db.requests.length);
-  console.log('looking for id:', id);
+
+
   const r=db.requests.find(x=>x.id===id);
-  console.log('found request:', r);
   if(!r){console.error('Request not found! Available IDs:', db.requests.map(x=>x.id));return;}
   const driver=document.getElementById('ad-'+id).value;
   const vehicle=document.getElementById('av-'+id).value;
@@ -1976,8 +1976,8 @@ function confirmTimeIn(){
   closeModal('modal-timein');
   renderActive();renderDispatcher();
   // refresh whichever tab is showing
-  const allTab=document.getElementById('dtab-all');
-  if(allTab&&allTab.classList.contains('active'))renderAll();
+  const weekTab=document.getElementById('dtab-week');
+  if(weekTab&&weekTab.classList.contains('active'))renderThisWeek();
 }
 function renderActive(){
   const el=document.getElementById('d-active');
@@ -2016,7 +2016,7 @@ function getWeekDates(){
 }
 
 function timetableNav(dir){
-  timetableWeekOffset=Math.max(-2,Math.min(2,timetableWeekOffset+dir));
+  timetableWeekOffset=Math.max(-4,Math.min(2,timetableWeekOffset+dir));
   renderTimetable();
 }
 
@@ -2031,7 +2031,7 @@ function renderTimetable(){
       <div style="font-size:13px;color:var(--muted)">${fmtDate(dates[0])} – ${fmtDate(dates[4])}</div>
     </div>
     <div style="display:flex;gap:6px;align-items:center">
-      <button class="btn btn-ghost btn-sm" onclick="timetableNav(-1)" ${timetableWeekOffset<=-2?'disabled style="opacity:0.4"':''}>← Prev week</button>
+      <button class="btn btn-ghost btn-sm" onclick="timetableNav(-1)" ${timetableWeekOffset<=-4?'disabled style="opacity:0.4"':''}>← Prev week</button>
       ${timetableWeekOffset!==0?`<button class="btn btn-sm" onclick="timetableWeekOffset=0;renderTimetable()">Today</button>`:''}
       <button class="btn btn-ghost btn-sm" onclick="timetableNav(1)" ${timetableWeekOffset>=2?'disabled style="opacity:0.4"':''}>Next week →</button>
     </div>
@@ -2071,11 +2071,46 @@ function renderTimetable(){
   el.innerHTML=html;
 }
 
-// ── ALL PASSES ──
-function renderAll(){
-  const el=document.getElementById('d-all');
-  if(!db.passes.length){el.innerHTML='<div class="empty-state"><div class="empty-icon">📂</div>No gate passes yet</div>';return;}
-  el.innerHTML='<div class="card">'+[...db.passes].reverse().map(p=>`
+// ── THIS WEEK ──
+function getWeekStart(offsetWeeks=0){
+  const now=new Date();
+  const dow=now.getDay();
+  const mon=new Date(now);
+  mon.setDate(now.getDate()-(dow===0?6:dow-1)+(offsetWeeks*7));
+  mon.setHours(0,0,0,0);
+  return mon;
+}
+function getWeekEnd(offsetWeeks=0){
+  const start=getWeekStart(offsetWeeks);
+  const end=new Date(start);
+  end.setDate(start.getDate()+6);
+  end.setHours(23,59,59,999);
+  return end;
+}
+function isThisWeek(dateStr){
+  if(!dateStr)return false;
+  const d=new Date(dateStr+'T00:00:00');
+  return d>=getWeekStart() && d<=getWeekEnd();
+}
+function isArchived(dateStr){
+  if(!dateStr)return false;
+  return new Date(dateStr+'T00:00:00') < getWeekStart();
+}
+
+function renderThisWeek(){
+  const el=document.getElementById('d-week');
+  const weekPasses=db.passes.filter(p=>isThisWeek(p.date));
+  if(!weekPasses.length){
+    el.innerHTML='<div class="empty-state"><div class="empty-icon">📅</div>No trips this week yet</div>';
+    return;
+  }
+  el.innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div class="section-label">Week of ${fmtDate(getWeekStart().toISOString().slice(0,10))} – ${fmtDate(getWeekEnd().toISOString().slice(0,10))}</div>
+      <button class="btn btn-sm btn-ghost" onclick="exportWeekCSV()">⬇ Export week</button>
+    </div>
+    <div class="card">`+
+    weekPasses.map(p=>`
     <div class="pass-row">
       <div class="pass-gp">${p.gp}</div>
       <div class="pass-info">
@@ -2087,7 +2122,270 @@ function renderAll(){
         ${statusBadge(p.status)}
         <button class="btn btn-ghost btn-sm" onclick="printGatePass('${p.gp}')" style="padding:3px 8px;font-size:11px">🖨️</button>
       </div>
-    </div>`).join('')+'</div>';
+    </div>`).join('')+
+    '</div>';
+}
+
+function exportWeekCSV(){
+  const weekPasses=db.passes.filter(p=>isThisWeek(p.date));
+  const hdr=['GATE PASS','DATE','DRIVER','VEHICLE','DESTINATION','DEPARTMENT','TIME OUT','TIME IN','STATUS','CASH'];
+  const rows=weekPasses.map(p=>[p.gp,p.date,p.driver,p.vehicle,p.dest,p.dept,p.timeOut,p.timeIn,p.status,p.cashNeeded?'YES':'NO']);
+  const csv=[hdr,...rows].map(r=>r.map(c=>`"${(c||'').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
+  a.download=`NicksMotors_Week_${getWeekStart().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+// ── REPORTS ──
+function renderReports(){
+  const el=document.getElementById('d-reports');
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:12px">
+      <div class="card-title">Search Gate Passes</div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>From date</label>
+          <input type="date" id="rpt-from" value="${getWeekStart().toISOString().slice(0,10)}">
+        </div>
+        <div class="form-group">
+          <label>To date</label>
+          <input type="date" id="rpt-to" value="${new Date().toISOString().slice(0,10)}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Driver</label>
+          <select id="rpt-driver">
+            <option value="">All drivers</option>
+            ${db.drivers.map(d=>`<option value="${d.name}">${d.name}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Vehicle</label>
+          <select id="rpt-vehicle">
+            <option value="">All vehicles</option>
+            ${db.vehicles.map(v=>`<option value="${v.id}">${v.id}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Department</label>
+          <select id="rpt-dept">
+            <option value="">All departments</option>
+            <option value="Workshops & Stores">Workshops &amp; Stores</option>
+            <option value="Administration & Compliance">Administration &amp; Compliance</option>
+            <option value="Operations">Operations</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Status</label>
+          <select id="rpt-status">
+            <option value="">All statuses</option>
+            <option value="done">Completed</option>
+            <option value="out">Out</option>
+            <option value="approved">Approved</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-primary" onclick="runReport()">🔍 Search</button>
+        <button class="btn btn-ghost" onclick="exportReportCSV()">⬇ Export results</button>
+      </div>
+    </div>
+    <div id="rpt-results"></div>`;
+}
+
+function runReport(){
+  const from=document.getElementById('rpt-from').value;
+  const to=document.getElementById('rpt-to').value;
+  const driver=document.getElementById('rpt-driver').value;
+  const vehicle=document.getElementById('rpt-vehicle').value;
+  const dept=document.getElementById('rpt-dept').value;
+  const status=document.getElementById('rpt-status').value;
+  let results=db.passes.filter(p=>{
+    if(from && p.date < from) return false;
+    if(to && p.date > to) return false;
+    if(driver && p.driver !== driver) return false;
+    if(vehicle && p.vehicle !== vehicle) return false;
+    if(dept && p.dept !== dept) return false;
+    if(status && p.status !== status) return false;
+    return true;
+  });
+  const el=document.getElementById('rpt-results');
+  if(!results.length){el.innerHTML='<div class="empty-state"><div class="empty-icon">🔍</div>No results found</div>';return;}
+  el.innerHTML=`<div style="font-size:13px;color:var(--muted);margin-bottom:8px">${results.length} result(s)</div>
+    <div class="card">`+
+    results.map(p=>`
+    <div class="pass-row">
+      <div class="pass-gp">${p.gp}</div>
+      <div class="pass-info">
+        <div class="pass-dest">${p.dest}${p.cashNeeded?' 💰':''}</div>
+        <div class="pass-sub">${fmtDate(p.date)} · ${p.driver?p.driver.split(' ')[0]:'—'} · ${p.vehicle||'—'} · ${p.dept||'—'}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center">
+        ${p.timeOut?`<span style="font-size:11px;color:var(--muted)">${p.timeOut}→${p.timeIn||'?'}</span>`:''}
+        ${statusBadge(p.status)}
+        <button class="btn btn-ghost btn-sm" onclick="printGatePass('${p.gp}')" style="padding:3px 8px;font-size:11px">🖨️</button>
+      </div>
+    </div>`).join('')+
+    '</div>';
+}
+
+function exportReportCSV(){
+  const from=document.getElementById('rpt-from')?.value||'';
+  const to=document.getElementById('rpt-to')?.value||'';
+  const driver=document.getElementById('rpt-driver')?.value||'';
+  const vehicle=document.getElementById('rpt-vehicle')?.value||'';
+  const dept=document.getElementById('rpt-dept')?.value||'';
+  const status=document.getElementById('rpt-status')?.value||'';
+  let results=db.passes.filter(p=>{
+    if(from && p.date < from) return false;
+    if(to && p.date > to) return false;
+    if(driver && p.driver !== driver) return false;
+    if(vehicle && p.vehicle !== vehicle) return false;
+    if(dept && p.dept !== dept) return false;
+    if(status && p.status !== status) return false;
+    return true;
+  });
+  const hdr=['GATE PASS','DATE','DRIVER','VEHICLE','DESTINATION','DEPARTMENT','PRIORITY','TIME OUT','TIME IN','DURATION (min)','STATUS','CASH'];
+  const rows=results.map(p=>{
+    let duration='';
+    if(p.timeOut&&p.timeIn){
+      const [oh,om]=p.timeOut.split(':').map(Number);
+      const [ih,im]=p.timeIn.split(':').map(Number);
+      duration=String(((ih*60+im)-(oh*60+om)));
+    }
+    return[p.gp,p.date,p.driver,p.vehicle,p.dest,p.dept,p.priority,p.timeOut,p.timeIn,duration,p.status,p.cashNeeded?'YES':'NO'];
+  });
+  const csv=[hdr,...rows].map(r=>r.map(c=>`"${(c||'').replace(/"/g,'""')}"`).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
+  a.download=`NicksMotors_Report_${from}_to_${to}.csv`;
+  a.click();
+}
+
+// ── DASHBOARD ──
+function renderDashboard(){
+  const el=document.getElementById('d-dashboard');
+  const td=today();
+  const thisWeekPasses=db.passes.filter(p=>isThisWeek(p.date));
+  const completed=thisWeekPasses.filter(p=>p.status==='done');
+  const totalPasses=db.passes.length;
+
+  // Driver stats
+  const driverStats={};
+  completed.forEach(p=>{
+    if(!p.driver)return;
+    const name=p.driver.split(' ')[0];
+    driverStats[name]=(driverStats[name]||0)+1;
+  });
+  const topDrivers=Object.entries(driverStats).sort((a,b)=>b[1]-a[1]).slice(0,5);
+
+  // Vehicle stats
+  const vehicleStats={};
+  completed.forEach(p=>{
+    if(!p.vehicle)return;
+    vehicleStats[p.vehicle]=(vehicleStats[p.vehicle]||0)+1;
+  });
+  const topVehicles=Object.entries(vehicleStats).sort((a,b)=>b[1]-a[1]);
+
+  // Destination stats
+  const destStats={};
+  completed.forEach(p=>{
+    if(!p.dest)return;
+    destStats[p.dest]=(destStats[p.dest]||0)+1;
+  });
+  const topDests=Object.entries(destStats).sort((a,b)=>b[1]-a[1]).slice(0,5);
+
+  // Dept stats
+  const deptStats={};
+  completed.forEach(p=>{
+    if(!p.dept)return;
+    deptStats[p.dept]=(deptStats[p.dept]||0)+1;
+  });
+
+  // Cash trips
+  const cashTrips=completed.filter(p=>p.cashNeeded).length;
+
+  // Avg duration
+  const durations=completed.filter(p=>p.timeOut&&p.timeIn).map(p=>{
+    const [oh,om]=p.timeOut.split(':').map(Number);
+    const [ih,im]=p.timeIn.split(':').map(Number);
+    return (ih*60+im)-(oh*60+om);
+  }).filter(d=>d>0);
+  const avgDuration=durations.length?Math.round(durations.reduce((a,b)=>a+b,0)/durations.length):0;
+
+  el.innerHTML=`
+    <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
+      <div class="section-label">This week · ${fmtDate(getWeekStart().toISOString().slice(0,10))} – ${fmtDate(getWeekEnd().toISOString().slice(0,10))}</div>
+    </div>
+
+    <!-- KPI row -->
+    <div class="stats" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.25rem">
+      <div class="stat" style="--accent-bar:var(--blue);--accent-num:var(--blue)">
+        <div class="stat-num">${thisWeekPasses.length}</div><div class="stat-lbl">Trips this week</div>
+      </div>
+      <div class="stat" style="--accent-bar:var(--green);--accent-num:var(--green)">
+        <div class="stat-num">${completed.length}</div><div class="stat-lbl">Completed</div>
+      </div>
+      <div class="stat" style="--accent-bar:var(--gold);--accent-num:#A07000">
+        <div class="stat-num">${avgDuration?avgDuration+'m':'—'}</div><div class="stat-lbl">Avg trip time</div>
+      </div>
+      <div class="stat" style="--accent-bar:var(--gold);--accent-num:#A07000">
+        <div class="stat-num">${cashTrips}</div><div class="stat-lbl">Cash trips</div>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+      <!-- Top drivers -->
+      <div class="card">
+        <div class="card-title">Top drivers this week</div>
+        ${topDrivers.length?topDrivers.map(([name,count])=>`
+          <div class="pass-row" style="padding:6px 0">
+            <div style="flex:1;font-size:13px;font-weight:500">${name}</div>
+            <div style="font-family:'Roboto Condensed',sans-serif;font-weight:700;color:var(--blue);font-size:14px">${count} trip${count>1?'s':''}</div>
+          </div>`).join(''):
+          '<div style="font-size:13px;color:var(--muted2);padding:8px 0">No completed trips yet</div>'}
+      </div>
+
+      <!-- Vehicle utilisation -->
+      <div class="card">
+        <div class="card-title">Vehicle utilisation</div>
+        ${topVehicles.length?topVehicles.map(([v,count])=>`
+          <div class="pass-row" style="padding:6px 0">
+            <div style="flex:1;font-size:13px;font-weight:500">${v}</div>
+            <div style="font-family:'Roboto Condensed',sans-serif;font-weight:700;color:var(--blue);font-size:14px">${count} trip${count>1?'s':''}</div>
+          </div>`).join(''):
+          '<div style="font-size:13px;color:var(--muted2);padding:8px 0">No completed trips yet</div>'}
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <!-- Top destinations -->
+      <div class="card">
+        <div class="card-title">Top destinations this week</div>
+        ${topDests.length?topDests.map(([dest,count])=>`
+          <div class="pass-row" style="padding:6px 0">
+            <div style="flex:1;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${dest}</div>
+            <div style="font-family:'Roboto Condensed',sans-serif;font-weight:700;color:var(--blue);font-size:14px;flex-shrink:0;margin-left:8px">${count}x</div>
+          </div>`).join(''):
+          '<div style="font-size:13px;color:var(--muted2);padding:8px 0">No completed trips yet</div>'}
+      </div>
+
+      <!-- Dept breakdown -->
+      <div class="card">
+        <div class="card-title">Trips by department</div>
+        ${Object.keys(deptStats).length?Object.entries(deptStats).sort((a,b)=>b[1]-a[1]).map(([dept,count])=>`
+          <div class="pass-row" style="padding:6px 0">
+            <div style="flex:1;font-size:13px;font-weight:500">${dept.split('&')[0].trim()}</div>
+            <div style="font-family:'Roboto Condensed',sans-serif;font-weight:700;color:var(--blue);font-size:14px">${count}</div>
+          </div>`).join(''):
+          '<div style="font-size:13px;color:var(--muted2);padding:8px 0">No completed trips yet</div>'}
+      </div>
+    </div>`;
 }
 
 // ── SETTINGS ──
@@ -2523,11 +2821,9 @@ async function syncLocalToSharePoint(){
   if(!graphToken) return;
   const unsynced = db.requests.filter(r => !r.spId);
   if(unsynced.length > 0){
-    console.log(`Syncing ${unsynced.length} local requests to SharePoint...`);
     for(const r of unsynced){
       await spSaveRequest(r);
     }
-    console.log('Sync complete');
   }
 }
 
