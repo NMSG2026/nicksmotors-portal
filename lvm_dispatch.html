@@ -1205,14 +1205,18 @@ async function spSavePass(pass){
 }
 
 async function spSaveConfig(key, value){
-  if(!graphToken) return; // No token — skip
-  const cfg = await spGet(SP_LISTS.config, `fields/ConfigKey eq '${key}'`);
-  const fields = { Title: key, ConfigKey: key, ConfigValue: JSON.stringify(value) };
-  if(cfg && cfg.length && cfg[0]._graphId){
-    await spUpdate(SP_LISTS.config, cfg[0]._graphId, fields);
-  } else {
-    await spCreate(SP_LISTS.config, fields);
-  }
+  if(!graphToken) return;
+  try {
+    // Get all config items and find matching key manually
+    const allCfg = await spGet(SP_LISTS.config);
+    const existing = allCfg ? allCfg.find(r => r.ConfigKey === key) : null;
+    const fields = { Title: key, ConfigKey: key, ConfigValue: JSON.stringify(value) };
+    if(existing && existing._graphId){
+      await spUpdate(SP_LISTS.config, existing._graphId, fields);
+    } else {
+      await spCreate(SP_LISTS.config, fields);
+    }
+  } catch(e){ console.warn('spSaveConfig failed:', e); }
 }
 
 // ── LOCAL CACHE (fallback + settings storage) ──
@@ -1839,6 +1843,21 @@ function checkEmerg(id){
   const w=document.getElementById('vw-'+id);
   if(w)w.style.display=(v&&v.type==='Company Car')?'block':'none';
 }
+async function syncAllConfig(){
+  if(!graphToken){ alert('Please log in to SharePoint first.'); return; }
+  showSPStatus('loading');
+  try {
+    await spSaveConfig('drivers', db.drivers);
+    await spSaveConfig('vehicles', db.vehicles);
+    await spSaveConfig('providers', db.providers);
+    showSPStatus('ok');
+    alert('✅ Settings synced to SharePoint successfully!');
+  } catch(e){
+    console.warn('Sync failed:', e);
+    showSPStatus('error');
+  }
+}
+
 // ── AMEND & CANCEL ──
 let amendingId = null;
 function openAmend(id){
@@ -2081,6 +2100,14 @@ function renderSettings(){
     <div class="settings-row">
       <div class="settings-row-info">Dispatcher login
         <div class="settings-row-sub">Username: ${DISPATCH_USER} · Password is stored securely in this browser</div>
+      </div>
+    </div>
+  </div>
+  <div class="settings-section">
+    <h3>SharePoint Sync <button class="btn btn-sm btn-primary" style="float:right" onclick="syncAllConfig()">↑ Sync All to SharePoint</button></h3>
+    <div class="settings-row">
+      <div class="settings-row-info">Push all drivers, vehicles and service providers to SharePoint
+        <div class="settings-row-sub">Use this if settings are not appearing on other devices</div>
       </div>
     </div>
   </div>
