@@ -1172,13 +1172,6 @@ async function spSaveConfig(key, value){
   }
 }
 
-// List names (must match exactly what you create in SharePoint)
-const SP_LISTS = {
-  requests : 'DispatchRequests',
-  passes   : 'GatePasses',
-  config   : 'DispatchConfig'
-};
-
 // ── LOCAL CACHE (fallback + settings storage) ──
 let db = JSON.parse(localStorage.getItem('lvm_v5') || 'null');
 if(!db) {
