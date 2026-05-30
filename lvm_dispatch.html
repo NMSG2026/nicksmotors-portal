@@ -1105,6 +1105,7 @@ async function loadFromSharePoint(){
     }
     saveLocal();
     showSPStatus('ok');
+    selectedIds.clear();
     renderPortalTrips && renderPortalTrips();
     renderDispatcher && renderDispatcher();
   } catch(e){
@@ -1871,7 +1872,12 @@ function dispatcherCancel(reqId){
 
 
 function approveReq(id){
-  const r=db.requests.find(x=>x.id===id);if(!r)return;
+  console.log('approveReq called with id:', id);
+  console.log('db.requests length:', db.requests.length);
+  console.log('looking for id:', id);
+  const r=db.requests.find(x=>x.id===id);
+  console.log('found request:', r);
+  if(!r){console.error('Request not found! Available IDs:', db.requests.map(x=>x.id));return;}
   const driver=document.getElementById('ad-'+id).value;
   const vehicle=document.getElementById('av-'+id).value;
   const gp='G'+db.gpNum++;
