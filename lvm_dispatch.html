@@ -1122,67 +1122,78 @@ async function loadFromSharePoint(){
 // ── SP WRITE HELPERS ──
 async function spSaveRequest(req){
   const fields = {
-    Title       : req.id,
-    ReqID       : req.id,
-    TripDate    : req.date,
-    Department  : req.dept,
-    Priority    : req.priority,
-    Slot        : req.slot,
-    TripType    : req.triptype,
-    SchedDate   : req.scheddate  || '',
-    SchedTime   : req.schedtime  || '',
-    VehiclePref : req.vehiclePref,
-    Destination : req.dest,
-    Address     : req.addr       || '',
-    GPS         : req.gps        || '',
-    Notes       : req.notes      || '',
-    CashNeeded  : req.cashNeeded,
-    Status      : req.status,
-    Driver      : req.driver     || '',
-    Vehicle     : req.vehicle    || '',
-    GatePass    : req.gp         || '',
-    Recur       : req.recur      || 'none',
-    RecurEnd    : req.recurEnd   || ''
+    Title       : req.id        || '',
+    ReqID       : req.id        || '',
+    TripDate    : req.date      || '',
+    Department  : req.dept      || '',
+    Priority    : req.priority  || '',
+    Slot        : req.slot      || '',
+    TripType    : req.triptype  || 'asap',
+    VehiclePref : req.vehiclePref || 'Any',
+    Destination : req.dest      || '',
+    Address     : req.addr      || '',
+    GPS         : req.gps       || '',
+    Notes       : req.notes     || '',
+    CashNeeded  : req.cashNeeded || false,
+    Status      : req.status    || 'pending',
+    Driver      : req.driver    || '',
+    Vehicle     : req.vehicle   || '',
+    GatePass    : req.gp        || '',
+    Recur       : req.recur     || 'none'
   };
-  if(req.spId){
-    await spUpdate(SP_LISTS.requests, req.spId, fields);
-  } else {
-    const result = await spCreate(SP_LISTS.requests, fields);
-    if(result) req.spId = result.id;
+  // Add scheduled fields only if they have values
+  if(req.scheddate) fields.SchedDate = req.scheddate;
+  if(req.schedtime) fields.SchedTime = req.schedtime;
+  if(req.recurEnd)  fields.RecurEnd  = req.recurEnd;
+
+  try {
+    if(req.spId){
+      await spUpdate(SP_LISTS.requests, req.spId, fields);
+    } else {
+      const result = await spCreate(SP_LISTS.requests, fields);
+      if(result) req.spId = result.id || result.ID;
+    }
+    saveLocal();
+  } catch(e){
+    console.warn('spSaveRequest failed:', e);
   }
-  saveLocal();
 }
 
 async function spSavePass(pass){
   const fields = {
-    Title       : pass.gp,
-    GatePass    : pass.gp,
+    Title       : pass.gp       || '',
+    GatePass    : pass.gp       || '',
     ReqID       : pass.reqId    || '',
-    TripDate    : pass.date,
-    Department  : pass.dept,
-    Priority    : pass.priority,
-    Driver      : pass.driver,
-    Vehicle     : pass.vehicle,
-    Slot        : pass.slot,
-    Destination : pass.dest,
+    TripDate    : pass.date     || '',
+    Department  : pass.dept     || '',
+    Priority    : pass.priority || '',
+    Driver      : pass.driver   || '',
+    Vehicle     : pass.vehicle  || '',
+    Slot        : pass.slot     || '',
+    Destination : pass.dest     || '',
     Address     : pass.addr     || '',
     GPS         : pass.gps      || '',
-    CashNeeded  : pass.cashNeeded,
+    CashNeeded  : pass.cashNeeded || false,
     TripType    : pass.triptype || 'asap',
-    SchedDate   : pass.scheddate|| '',
-    SchedTime   : pass.schedtime|| '',
     Notes       : pass.notes    || '',
-    Status      : pass.status,
+    Status      : pass.status   || 'approved',
     TimeOut     : pass.timeOut  || '',
     TimeIn      : pass.timeIn   || ''
   };
-  if(pass.spId){
-    await spUpdate(SP_LISTS.passes, pass.spId, fields);
-  } else {
-    const result = await spCreate(SP_LISTS.passes, fields);
-    if(result) pass.spId = result.id;
+  if(pass.scheddate) fields.SchedDate = pass.scheddate;
+  if(pass.schedtime) fields.SchedTime = pass.schedtime;
+
+  try {
+    if(pass.spId){
+      await spUpdate(SP_LISTS.passes, pass.spId, fields);
+    } else {
+      const result = await spCreate(SP_LISTS.passes, fields);
+      if(result) pass.spId = result.id || result.ID;
+    }
+    saveLocal();
+  } catch(e){
+    console.warn('spSavePass failed:', e);
   }
-  saveLocal();
 }
 
 async function spSaveConfig(key, value){
