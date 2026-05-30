@@ -1127,6 +1127,7 @@ async function loadFromSharePoint(){
 
 // ── SP WRITE HELPERS ──
 async function spSaveRequest(req){
+  if(!graphToken){ saveLocal(); return; } // No token — save locally only
   const fields = {
     Title       : req.id        || '',
     ReqID       : req.id        || '',
@@ -1166,6 +1167,7 @@ async function spSaveRequest(req){
 }
 
 async function spSavePass(pass){
+  if(!graphToken){ saveLocal(); return; } // No token — save locally only
   const fields = {
     Title       : pass.gp       || '',
     GatePass    : pass.gp       || '',
@@ -1203,6 +1205,7 @@ async function spSavePass(pass){
 }
 
 async function spSaveConfig(key, value){
+  if(!graphToken) return; // No token — skip
   const cfg = await spGet(SP_LISTS.config, `fields/ConfigKey eq '${key}'`);
   const fields = { Title: key, ConfigKey: key, ConfigValue: JSON.stringify(value) };
   if(cfg && cfg.length && cfg[0]._graphId){
