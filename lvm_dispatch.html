@@ -865,19 +865,24 @@ let currentUser  = null;
 let graphToken   = null;
 
 async function initMSAL(){
+  console.log('MSAL: starting init...');
   // Load MSAL from CDN if not already loaded
   if(!window.msal){
+    console.log('MSAL: loading CDN...');
     await new Promise((resolve, reject) => {
       const s = document.createElement('script');
       s.src = 'https://alcdn.msauth.net/browser/3.13.0/js/msal-browser.min.js';
-      s.onload = resolve;
-      s.onerror = reject;
+      s.onload = () => { console.log('MSAL: CDN loaded'); resolve(); };
+      s.onerror = (e) => { console.error('MSAL: CDN failed', e); reject(e); };
       document.head.appendChild(s);
     });
   }
   if(!msalInstance){
+    console.log('MSAL: creating instance...');
     msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+    console.log('MSAL: initializing...');
     await msalInstance.initialize();
+    console.log('MSAL: initialized OK');
   }
 
   // Handle redirect response (after login redirect comes back)
@@ -1408,7 +1413,7 @@ function showLogin(){
       signIn(); // redirects to Microsoft login
     }
   }).catch(e => {
-    console.warn('MSAL failed, falling back to password:', e);
+    console.error('MSAL full error:', e, e.message, e.stack);
     // Fallback to password login if MSAL fails
     document.getElementById('login-user').value='';
     document.getElementById('login-pass').value='';
