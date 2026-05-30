@@ -1052,7 +1052,7 @@ async function loadFromSharePoint(){
   try {
     const reqs = await spGet(SP_LISTS.requests, '', 'Created desc');
     console.log('loadFromSharePoint: reqs result:', reqs ? reqs.length + ' items' : 'null');
-    if(reqs){
+    if(reqs && reqs.length > 0){
       db.requests = reqs.map(r => ({
         id         : r.ReqID        || r._graphId,
         spId       : r._graphId,
@@ -1078,7 +1078,7 @@ async function loadFromSharePoint(){
       }));
     }
     const passes = await spGet(SP_LISTS.passes, '', 'Created desc');
-    if(passes){
+    if(passes && passes.length > 0){
       db.passes = passes.map(p => ({
         gp         : p.GatePass     || '',
         spId       : p._graphId,
@@ -1340,6 +1340,7 @@ function enter(role){
         userEl.innerHTML = `<span style="font-size:11px;color:var(--green);font-weight:600">🟢 ${name}</span>`;
       }
       loadFromSharePoint();
+      syncLocalToSharePoint();
       startAutoRefresh();
     } else {
       showSPStatus('offline');
@@ -2488,6 +2489,19 @@ body{font-family:Arial,sans-serif;font-size:11px;color:#000;background:#fff}
   <div class="gp-footer">Nick's Motors (Pvt) Ltd · Gate pass must be presented to guard on duty · ${p.gp}</div>
 </div></body></html>`);
   win.document.close();
+}
+
+// Push any local-only requests to SharePoint after dispatcher logs in
+async function syncLocalToSharePoint(){
+  if(!graphToken) return;
+  const unsynced = db.requests.filter(r => !r.spId);
+  if(unsynced.length > 0){
+    console.log(`Syncing ${unsynced.length} local requests to SharePoint...`);
+    for(const r of unsynced){
+      await spSaveRequest(r);
+    }
+    console.log('Sync complete');
+  }
 }
 
 // ── AUTO REFRESH ──
