@@ -1872,23 +1872,23 @@ function approveAndPrintStack(){
   const vehicle=document.getElementById('stack-vehicle').value;
   if(!driver||!vehicle){alert('Please select a driver and vehicle.');return;}
   const reqs=[...selectedIds].map(id=>db.requests.find(r=>r.id===id)).filter(Boolean);
+  if(!reqs.length){alert('Could not find selected requests. Please try again.');return;}
   const gp='G'+db.gpNum++;
   const stops=[];
   reqs.forEach(r=>{
     r.status='approved';r.driver=driver;r.vehicle=vehicle;r.gp=gp;
-    stops.push({dest:r.dest,addr:r.addr,dept:r.dept,notes:r.notes,cashNeeded:r.cashNeeded,gps:r.gps});
+    stops.push({dest:r.dest,addr:r.addr||'',dept:r.dept,notes:r.notes||'',cashNeeded:r.cashNeeded||false,gps:r.gps||''});
     spSaveRequest(r);
   });
-  // Create one combined pass
   const cashNeeded=reqs.some(r=>r.cashNeeded);
   const pass={
     gp,date:today(),reqId:reqs.map(r=>r.id).join(','),
     dept:reqs.map(r=>r.dept).filter((v,i,a)=>a.indexOf(v)===i).join(' / '),
-    priority:reqs.some(r=>r.priority.includes('Immediate'))?'PRIORITY - Immediate':'WITHIN 8 HOURS',
+    priority:reqs.some(r=>r.priority&&r.priority.includes('Immediate'))?'PRIORITY - Immediate':'WITHIN 8 HOURS',
     driver,vehicle,
-    slot:reqs[0].slot,
+    slot:reqs[0]?.slot||'MORNING',
     dest:reqs.map(r=>r.dest).join(' → '),
-    addr:reqs[0].addr||'',gps:'',
+    addr:reqs[0]?.addr||'',gps:'',
     cashNeeded,triptype:'asap',scheddate:'',schedtime:'',
     notes:reqs.map((r,i)=>`${i+1}. ${r.dest}${r.notes?' — '+r.notes:''}`).join('\n'),
     stops,status:'approved',timeOut:'',timeIn:''
@@ -1899,7 +1899,6 @@ function approveAndPrintStack(){
   closeModal('modal-stack');
   selectedIds.clear();
   renderQueue();renderDispatcher();
-  // Print after brief delay so DOM settles
   setTimeout(()=>printStackedGatePass(gp),200);
 }
 
