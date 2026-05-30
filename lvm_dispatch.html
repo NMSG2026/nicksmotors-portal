@@ -485,6 +485,7 @@ textarea{resize:vertical;min-height:68px}
       <div id="sp-status"></div>
       <button class="btn btn-ghost btn-sm" onclick="loadFromSharePoint()">↺ Refresh</button>
       <button class="btn btn-ghost btn-sm" onclick="exportCSV()">⬇ Export</button>
+      <button class="btn btn-ghost btn-sm" onclick="signOut()">Sign out</button>
       <button class="btn btn-ghost btn-sm" onclick="goHome()">← Back</button>
     </div>
   </div>
@@ -824,12 +825,345 @@ const DEFAULT_PROVIDERS = [
 ];
 
 // ══════════════════════════════════════════════════════
-// SHAREPOINT CONFIGURATION
-// Replace these two values after completing setup guide
+// MICROSOFT GRAPH AUTHENTICATION CONFIG
 // ══════════════════════════════════════════════════════
-const SP_SITE_URL   = 'https://springgreen.sharepoint.com/sites/Dispatch';
-// e.g. 'https://yourcompany.sharepoint.com/sites/Dispatch'
-const SP_CONFIGURED = SP_SITE_URL !== 'YOUR_SHAREPOINT_SITE_URL';
+const MSAL_CONFIG = {
+  auth: {
+    clientId    : '74d5f18d-f576-4f12-9721-121173115627',
+    authority   : 'https://login.microsoftonline.com/1c83b146-abff-4531-9ba5-5f702ab46c8b',
+    redirectUri : window.location.origin + window.location.pathname
+  },
+  cache: { cacheLocation: 'sessionStorage' }
+};
+
+const GRAPH_SCOPES = [
+  'User.Read',
+  'Sites.ReadWrite.All',
+  'https://springgreen.sharepoint.com/AllSites.Write'
+];
+
+const SP_SITE_URL = 'https://springgreen.sharepoint.com/sites/Dispatch';
+const SP_LISTS = {
+  requests : 'DispatchRequests',
+  passes   : 'GatePasses',
+  config   : 'DispatchConfig'
+};
+const SP_CONFIGURED = true;
+
+// MSAL instance
+let msalInstance = null;
+let currentUser  = null;
+let graphToken   = null;
+
+async function initMSAL(){
+  // Load MSAL from CDN
+  if(!window.msal){
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
+      s.onload = resolve;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+  }
+  msalInstance = new msal.PublicClientApplication(MSAL_CONFIG);
+  await msalInstance.initialize();
+
+  // Handle redirect response
+  const response = await msalInstance.handleRedirectPromise();
+  if(response) graphToken = response.accessToken;
+
+  // Check if already signed in
+  const accounts = msalInstance.getAllAccounts();
+  if(accounts.length > 0){
+    currentUser = accounts[0];
+    if(!graphToken) graphToken = await getGraphToken();
+    return true;
+  }
+  return false;
+}
+
+async function getGraphToken(){
+  if(!msalInstance) return null;
+  try {
+    const accounts = msalInstance.getAllAccounts();
+    if(!accounts.length) return null;
+    const result = await msalInstance.acquireTokenSilent({
+      scopes   : GRAPH_SCOPES,
+      account  : accounts[0]
+    });
+    graphToken = result.accessToken;
+    return graphToken;
+  } catch(e){
+    // Silent failed — try redirect
+    await msalInstance.acquireTokenRedirect({ scopes: GRAPH_SCOPES });
+    return null;
+  }
+}
+
+async function signIn(){
+  if(!msalInstance) await initMSAL();
+  await msalInstance.loginRedirect({ scopes: GRAPH_SCOPES });
+}
+
+async function signOut(){
+  if(!msalInstance) return;
+  await msalInstance.logoutRedirect();
+}
+
+// ── GRAPH API HELPERS ──
+async function graphGet(url){
+  const token = graphToken || await getGraphToken();
+  if(!token) return null;
+  try {
+    const r = await fetch(url, {
+      headers: { 'Authorization': `Bearer ${token}`, 'Accept': 'application/json' }
+    });
+    if(!r.ok) throw new Error(r.statusText);
+    return await r.json();
+  } catch(e){ console.warn('Graph GET failed:', e); return null; }
+}
+
+async function graphPost(url, body, method='POST'){
+  const token = graphToken || await getGraphToken();
+  if(!token) return null;
+  try {
+    const r = await fetch(url, {
+      method,
+      headers: {
+        'Authorization' : `Bearer ${token}`,
+        'Content-Type'  : 'application/json',
+        'Accept'        : 'application/json',
+        ...(method === 'PATCH' ? {'If-Match': '*'} : {})
+      },
+      body: JSON.stringify(body)
+    });
+    if(!r.ok) throw new Error(await r.text());
+    return method === 'DELETE' ? true : await r.json();
+  } catch(e){ console.warn(`Graph ${method} failed:`, e); return null; }
+}
+
+// Get SharePoint site ID once and cache it
+let _siteId = null;
+async function getSiteId(){
+  if(_siteId) return _siteId;
+  const hostname = 'springgreen.sharepoint.com';
+  const sitePath = '/sites/Dispatch';
+  const data = await graphGet(`https://graph.microsoft.com/v1.0/sites/${hostname}:${sitePath}`);
+  if(data) _siteId = data.id;
+  return _siteId;
+}
+
+// Get list ID by name and cache it
+const _listIds = {};
+async function getListId(listName){
+  if(_listIds[listName]) return _listIds[listName];
+  const siteId = await getSiteId();
+  if(!siteId) return null;
+  const data = await graphGet(`https://graph.microsoft.com/v1.0/sites/${siteId}/lists?$filter=displayName eq '${listName}'`);
+  if(data && data.value && data.value.length > 0){
+    _listIds[listName] = data.value[0].id;
+    return _listIds[listName];
+  }
+  return null;
+}
+
+// ── GRAPH LIST OPERATIONS ──
+async function spGet(listName, filter='', orderby=''){
+  const siteId = await getSiteId();
+  const listId = await getListId(listName);
+  if(!siteId || !listId) return null;
+  let url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items?expand=fields&$top=999`;
+  if(filter)  url += `&$filter=${encodeURIComponent(filter)}`;
+  if(orderby) url += `&$orderby=${encodeURIComponent(orderby)}`;
+  const data = await graphGet(url);
+  return data ? data.value.map(i => ({...i.fields, _graphId: i.id})) : null;
+}
+
+async function spCreate(listName, fields){
+  const siteId = await getSiteId();
+  const listId = await getListId(listName);
+  if(!siteId || !listId) return null;
+  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items`;
+  const result = await graphPost(url, { fields });
+  return result;
+}
+
+async function spUpdate(listName, graphId, fields){
+  const siteId = await getSiteId();
+  const listId = await getListId(listName);
+  if(!siteId || !listId) return null;
+  const url = `https://graph.microsoft.com/v1.0/sites/${siteId}/lists/${listId}/items/${graphId}/fields`;
+  return await graphPost(url, fields, 'PATCH');
+}
+
+// ── SP STATUS INDICATOR ──
+function showSPStatus(state){
+  let el = document.getElementById('sp-status');
+  if(!el) return;
+  const map = {
+    loading : ['⏳', 'Syncing…',        '#7A9AB5'],
+    ok      : ['🟢', 'Connected',        '#1A7A3C'],
+    error   : ['🔴', 'Offline — local',  '#C0392B'],
+    offline : ['⚪', 'Local mode',       '#7A9AB5'],
+    signing : ['🔐', 'Signing in…',      '#005B9A']
+  };
+  const [icon, text, color] = map[state] || map.offline;
+  el.innerHTML = `<span style="font-size:11px;color:${color};font-weight:600">${icon} ${text}</span>`;
+}
+
+// ── LOAD FROM SHAREPOINT ──
+async function loadFromSharePoint(){
+  if(!SP_CONFIGURED) return;
+  showSPStatus('loading');
+  try {
+    const reqs = await spGet(SP_LISTS.requests, '', 'Created desc');
+    if(reqs){
+      db.requests = reqs.map(r => ({
+        id         : r.ReqID        || r._graphId,
+        spId       : r._graphId,
+        date       : r.TripDate     || '',
+        dept       : r.Department   || '',
+        priority   : r.Priority     || '',
+        slot       : r.Slot         || '',
+        triptype   : r.TripType     || 'asap',
+        scheddate  : r.SchedDate    || '',
+        schedtime  : r.SchedTime    || '',
+        vehiclePref: r.VehiclePref  || 'Any',
+        dest       : r.Destination  || '',
+        addr       : r.Address      || '',
+        gps        : r.GPS          || '',
+        notes      : r.Notes        || '',
+        cashNeeded : r.CashNeeded   === true || r.CashNeeded === 'true',
+        status     : r.Status       || 'pending',
+        driver     : r.Driver       || '',
+        vehicle    : r.Vehicle      || '',
+        gp         : r.GatePass     || '',
+        recur      : r.Recur        || 'none',
+        recurEnd   : r.RecurEnd     || ''
+      }));
+    }
+    const passes = await spGet(SP_LISTS.passes, '', 'Created desc');
+    if(passes){
+      db.passes = passes.map(p => ({
+        gp         : p.GatePass     || '',
+        spId       : p._graphId,
+        date       : p.TripDate     || '',
+        reqId      : p.ReqID        || '',
+        dept       : p.Department   || '',
+        priority   : p.Priority     || '',
+        driver     : p.Driver       || '',
+        vehicle    : p.Vehicle      || '',
+        slot       : p.Slot         || '',
+        dest       : p.Destination  || '',
+        addr       : p.Address      || '',
+        gps        : p.GPS          || '',
+        cashNeeded : p.CashNeeded   === true || p.CashNeeded === 'true',
+        triptype   : p.TripType     || 'asap',
+        scheddate  : p.SchedDate    || '',
+        schedtime  : p.SchedTime    || '',
+        notes      : p.Notes        || '',
+        status     : p.Status       || 'approved',
+        timeOut    : p.TimeOut      || '',
+        timeIn     : p.TimeIn       || ''
+      }));
+      const nums = db.passes.map(p => parseInt((p.gp||'').replace('G',''))).filter(n => !isNaN(n));
+      if(nums.length) db.gpNum = Math.max(...nums) + 1;
+    }
+    const cfg = await spGet(SP_LISTS.config);
+    if(cfg && cfg.length){
+      const dRow = cfg.find(r => r.ConfigKey === 'drivers');
+      const vRow = cfg.find(r => r.ConfigKey === 'vehicles');
+      const pRow = cfg.find(r => r.ConfigKey === 'providers');
+      if(dRow && dRow.ConfigValue) try { db.drivers   = JSON.parse(dRow.ConfigValue); } catch(e){}
+      if(vRow && vRow.ConfigValue) try { db.vehicles  = JSON.parse(vRow.ConfigValue); } catch(e){}
+      if(pRow && pRow.ConfigValue) try { db.providers = JSON.parse(pRow.ConfigValue); } catch(e){}
+    }
+    saveLocal();
+    showSPStatus('ok');
+    renderPortalTrips && renderPortalTrips();
+    renderDispatcher && renderDispatcher();
+  } catch(e){
+    console.warn('SP load error:', e);
+    showSPStatus('error');
+  }
+}
+
+// ── SP WRITE HELPERS ──
+async function spSaveRequest(req){
+  const fields = {
+    Title       : req.id,
+    ReqID       : req.id,
+    TripDate    : req.date,
+    Department  : req.dept,
+    Priority    : req.priority,
+    Slot        : req.slot,
+    TripType    : req.triptype,
+    SchedDate   : req.scheddate  || '',
+    SchedTime   : req.schedtime  || '',
+    VehiclePref : req.vehiclePref,
+    Destination : req.dest,
+    Address     : req.addr       || '',
+    GPS         : req.gps        || '',
+    Notes       : req.notes      || '',
+    CashNeeded  : req.cashNeeded,
+    Status      : req.status,
+    Driver      : req.driver     || '',
+    Vehicle     : req.vehicle    || '',
+    GatePass    : req.gp         || '',
+    Recur       : req.recur      || 'none',
+    RecurEnd    : req.recurEnd   || ''
+  };
+  if(req.spId){
+    await spUpdate(SP_LISTS.requests, req.spId, fields);
+  } else {
+    const result = await spCreate(SP_LISTS.requests, fields);
+    if(result) req.spId = result.id;
+  }
+  saveLocal();
+}
+
+async function spSavePass(pass){
+  const fields = {
+    Title       : pass.gp,
+    GatePass    : pass.gp,
+    ReqID       : pass.reqId    || '',
+    TripDate    : pass.date,
+    Department  : pass.dept,
+    Priority    : pass.priority,
+    Driver      : pass.driver,
+    Vehicle     : pass.vehicle,
+    Slot        : pass.slot,
+    Destination : pass.dest,
+    Address     : pass.addr     || '',
+    GPS         : pass.gps      || '',
+    CashNeeded  : pass.cashNeeded,
+    TripType    : pass.triptype || 'asap',
+    SchedDate   : pass.scheddate|| '',
+    SchedTime   : pass.schedtime|| '',
+    Notes       : pass.notes    || '',
+    Status      : pass.status,
+    TimeOut     : pass.timeOut  || '',
+    TimeIn      : pass.timeIn   || ''
+  };
+  if(pass.spId){
+    await spUpdate(SP_LISTS.passes, pass.spId, fields);
+  } else {
+    const result = await spCreate(SP_LISTS.passes, fields);
+    if(result) pass.spId = result.id;
+  }
+  saveLocal();
+}
+
+async function spSaveConfig(key, value){
+  const cfg = await spGet(SP_LISTS.config, `fields/ConfigKey eq '${key}'`);
+  const fields = { Title: key, ConfigKey: key, ConfigValue: JSON.stringify(value) };
+  if(cfg && cfg.length && cfg[0]._graphId){
+    await spUpdate(SP_LISTS.config, cfg[0]._graphId, fields);
+  } else {
+    await spCreate(SP_LISTS.config, fields);
+  }
+}
 
 // List names (must match exactly what you create in SharePoint)
 const SP_LISTS = {
@@ -854,80 +1188,7 @@ function saveLocal(){ localStorage.setItem('lvm_v5', JSON.stringify(db)); }
 // save — writes to SharePoint if configured, always writes locally
 async function save(){
   saveLocal();
-  // SharePoint writes happen per-action (see spCreate / spUpdate below)
-}
-
-// ── SHAREPOINT HELPERS ──
-async function spGet(list, filter='', orderby=''){
-  if(!SP_CONFIGURED) return null;
-  try {
-    let url = `${SP_SITE_URL}/_api/web/lists/getbytitle('${list}')/items?$top=2000`;
-    if(filter)  url += `&$filter=${encodeURIComponent(filter)}`;
-    if(orderby) url += `&$orderby=${encodeURIComponent(orderby)}`;
-    const r = await fetch(url, {
-      headers:{ 'Accept':'application/json;odata=verbose',
-                'Content-Type':'application/json;odata=verbose' },
-      credentials:'include'
-    });
-    if(!r.ok) throw new Error(r.statusText);
-    const d = await r.json();
-    return d.d.results;
-  } catch(e){ console.warn('SP GET failed:',e); return null; }
-}
-
-async function spCreate(list, fields){
-  if(!SP_CONFIGURED) return null;
-  try {
-    const digest = await getDigest();
-    const meta   = { type:`SP.Data.${list}ListItem` };
-    const r = await fetch(`${SP_SITE_URL}/_api/web/lists/getbytitle('${list}')/items`, {
-      method:'POST',
-      headers:{
-        'Accept':'application/json;odata=verbose',
-        'Content-Type':'application/json;odata=verbose',
-        'X-RequestDigest': digest
-      },
-      credentials:'include',
-      body: JSON.stringify({ __metadata: meta, ...fields })
-    });
-    if(!r.ok) throw new Error(r.statusText);
-    const d = await r.json();
-    return d.d;
-  } catch(e){ console.warn('SP CREATE failed:',e); return null; }
-}
-
-async function spUpdate(list, itemId, fields){
-  if(!SP_CONFIGURED) return null;
-  try {
-    const digest = await getDigest();
-    const meta   = { type:`SP.Data.${list}ListItem` };
-    await fetch(`${SP_SITE_URL}/_api/web/lists/getbytitle('${list}')/items(${itemId})`, {
-      method:'POST',
-      headers:{
-        'Accept':'application/json;odata=verbose',
-        'Content-Type':'application/json;odata=verbose',
-        'X-RequestDigest': digest,
-        'X-HTTP-Method':'MERGE',
-        'If-Match':'*'
-      },
-      credentials:'include',
-      body: JSON.stringify({ __metadata: meta, ...fields })
-    });
-  } catch(e){ console.warn('SP UPDATE failed:',e); }
-}
-
-let _digest = null, _digestExp = 0;
-async function getDigest(){
-  if(_digest && Date.now() < _digestExp) return _digest;
-  const r = await fetch(`${SP_SITE_URL}/_api/contextinfo`, {
-    method:'POST',
-    headers:{'Accept':'application/json;odata=verbose'},
-    credentials:'include'
-  });
-  const d = await r.json();
-  _digest    = d.d.GetContextWebInformation.FormDigestValue;
-  _digestExp = Date.now() + 25*60*1000; // 25 min
-  return _digest;
+  // SharePoint writes happen per-action via Microsoft Graph
 }
 
 // ── LOAD FROM SHAREPOINT ──
@@ -1187,8 +1448,24 @@ function enter(role){
   document.getElementById('screen-'+role).classList.add('active');
   if(role==='dispatcher'){
     renderDispatcher();dTab('queue');
-    if(SP_CONFIGURED) loadFromSharePoint();
-    else showSPStatus('offline');
+    showSPStatus('signing');
+    initMSAL().then(signedIn => {
+      if(signedIn){
+        // Show user name in topbar
+        const userEl = document.getElementById('sp-status');
+        if(userEl && currentUser){
+          const name = currentUser.name || currentUser.username;
+          userEl.innerHTML = `<span style="font-size:11px;color:var(--green);font-weight:600">🟢 ${name}</span>`;
+        }
+        loadFromSharePoint();
+      } else {
+        showSPStatus('signing');
+        signIn();
+      }
+    }).catch(e => {
+      console.warn('MSAL init failed:', e);
+      showSPStatus('error');
+    });
   }
   if(role==='requester'){buildDestDatalist();buildVehiclePref();buildSchedVehiclePref();rTab('new');}
 }
