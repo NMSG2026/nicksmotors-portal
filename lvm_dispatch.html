@@ -831,9 +831,18 @@ const MSAL_CONFIG = {
   auth: {
     clientId    : '74d5f18d-f576-4f12-9721-121173115627',
     authority   : 'https://login.microsoftonline.com/1c83b146-abff-4531-9ba5-5f702ab46c8b',
-    redirectUri : window.location.origin + window.location.pathname
+    redirectUri : 'https://blue-ground-0f19ded10.7.azurestaticapps.net/lvm_dispatch.html'
   },
-  cache: { cacheLocation: 'sessionStorage' }
+  cache: {
+    cacheLocation      : 'sessionStorage',
+    storeAuthStateInCookie: false
+  },
+  system: {
+    loggerOptions: {
+      loggerCallback: () => {},
+      piiLoggingEnabled: false
+    }
+  }
 };
 
 const GRAPH_SCOPES = [
@@ -860,7 +869,7 @@ async function initMSAL(){
   if(!window.msal){
     await new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = 'https://alcdn.msauth.net/browser/2.38.3/js/msal-browser.min.js';
+      s.src = 'https://alcdn.msauth.net/browser/3.13.0/js/msal-browser.min.js';
       s.onload = resolve;
       s.onerror = reject;
       document.head.appendChild(s);
